@@ -17,11 +17,22 @@ jobs:
           net user runneradmin "P@ssw0rd1234!"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
 
-          # 2. Enable Remote Desktop and disable NLA
-          Write-Host "Enabling RDP..."
+          # 2. Enable Remote Desktop, disable NLA, and restart service
+          Write-Host "Enabling RDP and applying settings..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Write-Host "Restarting TermService to bind port 3389..."
+          Restart-Service -Name "TermService" -Force
+
+          Write-Host "Verifying local RDP listener on 3389..."
+          $test = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389
+          if (-not $test.TcpTestSucceeded) {
+              Write-Host "CRITICAL: Local port 3389 failed to bind!"
+          } else {
+              Write-Host "SUCCESS: Local port 3389 is actively listening."
+          }
 
           # 3. Download standalone bore CLI (no account or card required)
           Write-Host "Downloading bore tunnel..."
