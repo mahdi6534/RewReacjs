@@ -1,54 +1,73 @@
-steps:
-      - name: Set Up RDP and Tunnel
+name: Windows RDP Debugging
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Configure RDP and Tunnel
         shell: powershell
         run: |
-          # 1. Set admin password
+          # 1. Set admin credentials and group permissions
+          Write-Host "Configuring credentials..."
           net user runneradmin "P@ssw0rd1234!"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
 
-          # 2. Enable Remote Desktop
+          # 2. Enable RDP and disable Network Level Authentication (NLA)
+          Write-Host "Enabling RDP and disabling NLA..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          # 3. Direct Download Official ngrok (fast, bypasses choco)
-          $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
-          Expand-Archive -Path "ngrok.zip" -DestinationPath "$PWD" -Force
+          # 3. Install ngrok via Chocolatey without hanging
+          Write-Host "Installing ngrok..."
+          choco install ngrok --no-progress -y
 
           # 4. Authenticate ngrok
-          .\ngrok.exe config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          Write-Host "Configuring auth token..."
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-          # 5. Launch ngrok with logging enabled
-          Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -RedirectStandardOutput "ngrok.log" -RedirectStandardError "ngrok_err.log"
+          # 5. Launch ngrok with full console output redirected to a log file
+          Write-Host "Launching tunnel on port 3389..."
+          Start-Process -FilePath "ngrok" -ArgumentList "tcp 3389 --log stdout" -RedirectStandardOutput "ngrok.log" -RedirectStandardError "ngrok_err.log"
 
-          # 6. Polling loop: Wait up to 30 seconds for the tunnel to open
-          $url = $null
+          # 6. Poll localhost:4040 for the assigned tunnel URL (up to 30 seconds)
+          $publicUrl = $null
           for ($i = 0; $i -lt 15; $i++) {
               Start-Sleep -Seconds 2
               try {
                   $response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -TimeoutSec 2 -ErrorAction Stop
-                  if ($response.tunnels.Count -gt 0) {
-                      $url = $response.tunnels[0].public_url
+                  if ($response.tunnels -and $response.tunnels.Count -gt 0) {
+                      $publicUrl = $response.tunnels[0].public_url
                       break
                   }
               } catch {
-                  Write-Host "Waiting for ngrok to initialize... ($($i * 2)s)"
+                  Write-Host "Waiting for tunnel listener... ($($i * 2)s)"
               }
           }
 
-          # 7. Check result or dump debug logs if it failed
-          if ($url) {
+          # 7. Validate connection or dump ngrok debug log
+          if ($publicUrl) {
+              Write-Host ""
               Write-Host "=========================================="
-              Write-Host "RDP ADDRESS: $url"
+              Write-Host "RDP ADDRESS : $publicUrl"
+              Write-Host "USERNAME    : runneradmin"
+              Write-Host "PASSWORD    : P@ssw0rd1234!"
               Write-Host "=========================================="
+              Write-Host ""
           } else {
-              Write-Host "Failed to establish tunnel. ngrok output:"
-              Get-Content "ngrok.log" -ErrorAction SilentlyContinue
-              Get-Content "ngrok_err.log" -ErrorAction SilentlyContinue
+              Write-Host "ERROR: ngrok failed to start. Dumping logs:"
+              if (Test-Path "ngrok.log") { Get-Content "ngrok.log" }
+              if (Test-Path "ngrok_err.log") { Get-Content "ngrok_err.log" }
               exit 1
           }
 
       - name: Keep Runner Alive
         shell: powershell
         run: |
-          Write-Host "RDP session ready. Runner will stay alive for 1 hour..."
+          Write-Host "Session active. Keeping runner alive for 60 minutes..."
           Start-Sleep -Seconds 3600
