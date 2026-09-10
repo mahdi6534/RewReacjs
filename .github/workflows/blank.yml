@@ -9,42 +9,40 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Configure RDP and Bore Tunnel
+      - name: Start RDP Session
         shell: powershell
         run: |
-          # 1. User and RDP configuration
+          # 1. User credentials and permissions
           Write-Host "Configuring user credentials..."
           net user runneradmin "P@ssw0rd1234!"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
 
-          # 2. Enable Remote Desktop, disable NLA, and restart service
+          # 2. Enable Remote Desktop and restart service
           Write-Host "Enabling RDP and applying settings..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-          Write-Host "Restarting TermService to bind port 3389..."
           Restart-Service -Name "TermService" -Force
 
-          Write-Host "Verifying local RDP listener on 3389..."
+          # 3. Verify internal listener
           $test = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389
           if (-not $test.TcpTestSucceeded) {
               Write-Host "CRITICAL: Local port 3389 failed to bind!"
-          } else {
-              Write-Host "SUCCESS: Local port 3389 is actively listening."
+              exit 1
           }
+          Write-Host "SUCCESS: Local port 3389 is actively listening."
 
-          # 3. Download standalone bore CLI (no account or card required)
+          # 4. Download standalone bore CLI
           Write-Host "Downloading bore tunnel..."
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
           Expand-Archive -Path "bore.zip" -DestinationPath "$PWD" -Force
 
-          # 4. Start bore tunnel on port 3389
+          # 5. Start bore tunnel in background
           Write-Host "Starting TCP tunnel..."
           Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log" -RedirectStandardError "bore_err.log"
 
-          # 5. Extract assigned public port from log
+          # 6. Retrieve assigned public endpoint
           $address = $null
           for ($i = 0; $i -lt 15; $i++) {
               Start-Sleep -Seconds 2
@@ -58,7 +56,7 @@ jobs:
               Write-Host "Waiting for tunnel assignment... ($($i * 2)s)"
           }
 
-          # 6. Display connection info
+          # 7. Print credentials and KEEP STEP RUNNING
           if ($address) {
               Write-Host ""
               Write-Host "=========================================="
@@ -67,15 +65,13 @@ jobs:
               Write-Host "PASSWORD    : P@ssw0rd1234!"
               Write-Host "=========================================="
               Write-Host ""
+              Write-Host "Tunnel is live! Keeping session open for 60 minutes..."
+              
+              # Keep alive in the SAME step so bore.exe is not killed:
+              Start-Sleep -Seconds 3600
           } else {
               Write-Host "Failed to launch bore tunnel. Logs:"
               Get-Content "bore.log" -ErrorAction SilentlyContinue
               Get-Content "bore_err.log" -ErrorAction SilentlyContinue
               exit 1
           }
-
-      - name: Keep Runner Alive
-        shell: powershell
-        run: |
-          Write-Host "RDP session active. Keeping runner alive for 60 minutes..."
-          Start-Sleep -Seconds 3600
